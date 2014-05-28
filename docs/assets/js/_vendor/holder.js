@@ -12,13 +12,15 @@ var Holder = Holder || {};
 var system_config = {
 	use_svg: false,
 	use_canvas: false,
-	use_fallback: false
+	use_fallback: false,
+	debounce: 100
 };
 var instance_config = {};
 var preempted = false;
 canvas = document.createElement('canvas');
 var dpr = 1, bsr = 1;
 var resizable_images = [];
+var debounce_timer;
 
 if (!canvas.getContext) {
 	system_config.use_fallback = true;
@@ -79,8 +81,7 @@ var settings = {
 			foreground: "#1C2846",
 			size: 12
 		}
-	},
-	stylesheet: ""
+	}
 };
 app.flags = {
 	dimensions: {
@@ -170,6 +171,8 @@ var svg_el = (function(){
 	return function(props){
 		svg.setAttribute("width",props.width);
 		svg.setAttribute("height", props.height);
+		svg.setAttribute("viewBox", "0 0 "+props.width+" "+props.height)
+		svg.setAttribute("preserveAspectRatio", "none")
 		bg_el.setAttribute("width", props.width);
 		bg_el.setAttribute("height", props.height);
 		bg_el.setAttribute("fill", props.template.background);
@@ -178,7 +181,7 @@ var svg_el = (function(){
 		textnode_el.nodeValue=props.text
 		text_el.setAttribute("style", css_properties({
 		"fill": props.template.foreground,
-		"font-weight": "bold",
+		"font-weight": props.font_weight,
 		"font-size": props.text_height+"px",
 		"font-family":props.font,
 		"dominant-baseline":"central"
@@ -189,7 +192,7 @@ var svg_el = (function(){
 
 function css_properties(props){
 	var ret = [];
-	for(p in props){
+	for(var p in props){
 		if(props.hasOwnProperty(p)){
 			ret.push(p+":"+props[p])
 		}
@@ -211,6 +214,8 @@ function draw_canvas(args) {
 	var width = dimensions.width * ratio,
 		height = dimensions.height * ratio;
 	var font = template.font ? template.font : "Arial,Helvetica,sans-serif";
+	var font_weight = template.fontweight ? template.fontweight : "bold";
+	font_weight = font_weight == "normal" ? "" : font_weight;
 	canvas.width = width;
 	canvas.height = height;
 	ctx.textAlign = "center";
@@ -218,7 +223,8 @@ function draw_canvas(args) {
 	ctx.fillStyle = template.background;
 	ctx.fillRect(0, 0, width, height);
 	ctx.fillStyle = template.foreground;
-	ctx.font = "bold " + text_height + "px " + font;
+	ctx.font = font_weight + " " + text_height + "px " + font;
+	
 	var text = template.text ? template.text : (Math.floor(dimensions.width) + "x" + Math.floor(dimensions.height));
 	if (literal) {
 		var dimensions = holder.dimensions;
@@ -233,7 +239,7 @@ function draw_canvas(args) {
 		text_height = Math.floor(text_height * 0.75 * (width / text_width));
 	}
 	//Resetting font size if necessary
-	ctx.font = "bold " + (text_height * ratio) + "px " + font;
+	ctx.font = font_weight + " " + (text_height * ratio) + "px " + font;
 	ctx.fillText(text, (width / 2), (height / 2), width);
 	return canvas.toDataURL("image/png");
 }
@@ -251,6 +257,7 @@ function draw_svg(args){
 		height = dimensions.height;
 		
 	var font = template.font ? template.font : "Arial,Helvetica,sans-serif";
+	var font_weight = template.fontweight ? template.fontweight : "bold";
 	var text = template.text ? template.text : (Math.floor(dimensions.width) + "x" + Math.floor(dimensions.height));
 	
 	if (literal) {
@@ -266,7 +273,8 @@ function draw_svg(args){
 		width:width, 
 		height:height, 
 		text_height:text_height, 
-		font:font, 
+		font:font,
+		font_weight:font_weight,
 		template:template
 	})
 	return "data:image/svg+xml;base64,"+btoa(unescape(encodeURIComponent(string)));
@@ -383,9 +391,22 @@ function set_initial_dimensions(el){
 	}
 }
 
+function debounce(fn) {
+	if (instance_config.debounce) {
+		if (!debounce_timer) fn.call(this);
+		if (debounce_timer) clearTimeout(debounce_timer);
+		debounce_timer = setTimeout(function() {
+			debounce_timer = null;
+			fn.call(this)
+		}, instance_config.debounce);
+	} else {
+		fn.call(this)
+	}
+}
+
 function resizable_update(element) {
 	var images;
-	if (element.nodeType == null) {
+	if (element == null || element.nodeType == null) {
 		images = resizable_images;
 	} else {
 		images = [element]
@@ -394,40 +415,38 @@ function resizable_update(element) {
 		if (!images.hasOwnProperty(i)) {
 			continue;
 		}
-		var el = images[i]
+		var el = images[i];
 		if (el.holder_data) {
 			var holder = el.holder_data;
-			var dimensions = dimension_check(el, app.invisible_error_fn( resizable_update))
-			if(dimensions){
-				if(holder.fluid){
-					if(holder.auto){
-						switch(holder.fluid_data.mode){
-							case "width":
-								dimensions.height = dimensions.width / holder.fluid_data.ratio;
+			var dimensions = dimension_check(el, app.invisible_error_fn(resizable_update))
+			if (dimensions) {
+				if (holder.fluid) {
+					if (holder.auto) {
+						switch (holder.fluid_data.mode) {
+						case "width":
+							dimensions.height = dimensions.width / holder.fluid_data.ratio;
 							break;
-							case "height":
-								dimensions.width = dimensions.height * holder.fluid_data.ratio;
+						case "height":
+							dimensions.width = dimensions.height * holder.fluid_data.ratio;
 							break;
 						}
 					}
-					el.setAttribute("src", draw({
-						ctx: ctx,
-						dimensions: dimensions,
-						template: holder.theme,
-						ratio: ratio,
-						holder: holder
-					}))
 				}
-				if(holder.textmode && holder.textmode == "exact"){
+				
+				var draw_params = {
+					ctx: ctx,
+					dimensions: dimensions,
+					template: holder.theme,
+					ratio: ratio,
+					holder: holder
+				};
+								
+				if (holder.textmode && holder.textmode == "exact") {
 					holder.exact_dimensions = dimensions;
-					el.setAttribute("src", draw({
-						ctx: ctx,
-						dimensions: holder.dimensions,
-						template: holder.theme,
-						ratio: ratio,
-						holder: holder
-					}))
+					draw_params.dimensions = holder.dimensions;
 				}
+				
+				el.setAttribute("src", draw(draw_params));
 			}
 		}
 	}
@@ -513,7 +532,9 @@ app.run = function (o) {
 		instance_config.use_canvas = true;
 		instance_config.use_svg = false;
 	}
-			
+	
+	instance_config.debounce = (options.debounce != null) ? options.debounce : instance_config.debounce;
+
 	if (typeof (options.images) == "string") {
 		imageNodes = selector(options.images);
 	} else if (window.NodeList && options.images instanceof window.NodeList) {
@@ -532,24 +553,6 @@ app.run = function (o) {
 		bgnodes = [options.bgnodes];
 	}
 	for (i = 0, l = imageNodes.length; i < l; i++) images.push(imageNodes[i]);
-	
-	var holdercss = document.getElementById("holderjs-style");
-	if (!holdercss) {
-		holdercss = document.createElement("style");
-		holdercss.setAttribute("id", "holderjs-style");
-		holdercss.type = "text/css";
-		document.getElementsByTagName("head")[0].appendChild(holdercss);
-	}
-	
-	if (!options.nocss) {
-		if (holdercss.styleSheet) {
-			holdercss.styleSheet.cssText += options.stylesheet;
-		} else {
-			if(options.stylesheet.length){
-				holdercss.appendChild(document.createTextNode(options.stylesheet));
-			}
-		}
-	}
 	
 	var cssregex = new RegExp(options.domain + "\/(.*?)\"?\\)");
 	for (var l = bgnodes.length, i = 0; i < l; i++) {
@@ -597,16 +600,23 @@ app.run = function (o) {
 };
 
 contentLoaded(win, function () {
+	var debounce_resizable_update = function () {
+		debounce(function () {
+			resizable_update(null)
+		})
+	};
 	if (window.addEventListener) {
-		window.addEventListener("resize", resizable_update, false);
-		window.addEventListener("orientationchange", resizable_update, false);
+		window.addEventListener("resize", debounce_resizable_update, false);
+		window.addEventListener("orientationchange", debounce_resizable_update, false);
 	} else {
-		window.attachEvent("onresize", resizable_update)
+		window.attachEvent("onresize", debounce_resizable_update)
 	}
 	preempted || app.run({});
 
 	if (typeof window.Turbolinks === "object") {
-		document.addEventListener("page:change", function() { app.run({}) })
+		document.addEventListener("page:change", function () {
+			app.run({})
+		})
 	}
 });
 if (typeof define === "function" && define.amd) {
@@ -616,7 +626,7 @@ if (typeof define === "function" && define.amd) {
 }
 
 //github.com/davidchambers/Base64.js
-(function(){function t(t){this.message=t}var e="undefined"!=typeof exports?exports:this,r="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";t.prototype=Error(),t.prototype.name="InvalidCharacterError",e.btoa||(e.btoa=function(e){for(var o,n,a=0,i=r,c="";e.charAt(0|a)||(i="=",a%1);c+=i.charAt(63&o>>8-8*(a%1))){if(n=e.charCodeAt(a+=.75),n>255)throw new t("'btoa' failed");o=o<<8|n}return c}),e.atob||(e.atob=function(e){if(e=e.replace(/=+$/,""),1==e.length%4)throw new t("'atob' failed");for(var o,n,a=0,i=0,c="";n=e.charAt(i++);~n&&(o=a%4?64*o+n:n,a++%4)?c+=String.fromCharCode(255&o>>(6&-2*a)):0)n=r.indexOf(n);return c})})();
+(function(){function t(t){this.message=t}var e="undefined"!=typeof exports?exports:this,r="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";t.prototype=Error(),t.prototype.name="InvalidCharacterError",e.btoa||(e.btoa=function(e){for(var o,n,a=0,i=r,c="";e.charAt(0|a)||(i="=",a%1);c+=i.charAt(63&o>>8-8*(a%1))){if(n=e.charCodeAt(a+=0.75),n>255)throw new t("'btoa' failed");o=o<<8|n}return c}),e.atob||(e.atob=function(e){if(e=e.replace(/=+$/,""),1==e.length%4)throw new t("'atob' failed");for(var o,n,a=0,i=0,c="";n=e.charAt(i++);~n&&(o=a%4?64*o+n:n,a++%4)?c+=String.fromCharCode(255&o>>(6&-2*a)):0)n=r.indexOf(n);return c})})();
 
 //getElementsByClassName polyfill
 document.getElementsByClassName||(document.getElementsByClassName=function(e){var t=document,n,r,i,s=[];if(t.querySelectorAll)return t.querySelectorAll("."+e);if(t.evaluate){r=".//*[contains(concat(' ', @class, ' '), ' "+e+" ')]",n=t.evaluate(r,t,null,0,null);while(i=n.iterateNext())s.push(i)}else{n=t.getElementsByTagName("*"),r=new RegExp("(^|\\s)"+e+"(\\s|$)");for(i=0;i<n.length;i++)r.test(n[i].className)&&s.push(n[i])}return s})
